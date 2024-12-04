@@ -1,60 +1,69 @@
 import aiohttp
 import json
-from typing import List, Dict, Optional
+from typing import Dict, Optional
+import re
 
-async def search_shopee(query: str, limit: int = 5, category_id: Optional[int] = None) -> List[Dict]:
+async def extract_product_info_from_url(url: str) -> Optional[Dict]:
     """
-    Busca produtos na Shopee usando a API não oficial
-    
-    Args:
-        query: Termo de busca
-        limit: Número máximo de produtos (padrão: 5)
-        category_id: ID da categoria (opcional)
+    Extrai shopid e itemid do link da Shopee
+    Exemplo: https://shopee.com.br/produto-nome-i.123456789.987654321
     """
-    base_url = "https://shopee.com.br/api/v4/search/search_items"
+    pattern = r"i\.(\d+)\.(\d+)"
+    match = re.search(pattern, url)
+    if match:
+        return {
+            "shop_id": match.group(1),
+            "item_id": match.group(2)
+        }
+    return None
+
+async def get_product_details(url: str) -> Optional[Dict]:
+    """
+    Busca detalhes de um produto específico da Shopee usando a API não oficial
+    """
+    product_info = await extract_product_info_from_url(url)
+    if not product_info:
+        return None
     
-    async with aiohttp.ClientSession() as session:
-        params = {
-            "keyword": query,
-            "limit": limit,
-            "newest": 0,
-            "order": "desc",  # Ordenação: desc (maior preço) ou asc (menor preço)
-            "page_type": "search",
-            "scenario": "PAGE_GLOBAL_SEARCH",
-            "version": 2
-        }
-        
-        # Adiciona categoria se especificada
-        if category_id:
-            params["category_id"] = category_id
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        
-        try:
+    base_url = f"https://shopee.com.br/api/v4/item/get"
+    params = {
+        "itemid": product_info["item_id"],
+        "shopid": product_info["shop_id"]
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
             async with session.get(base_url, params=params, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    items = data.get("items", [])
+                    item = data.get("data")
+                    if not item:
+                        return None
                     
-                    return [{
-                        "id": item["item_basic"]["itemid"],
-                        "name": item["item_basic"]["name"],
-                        "price": item["item_basic"]["price"] / 100000,
-                        "original_price": item["item_basic"].get("price_before_discount", 0) / 100000,
-                        "discount": item["item_basic"].get("raw_discount", 0),
-                        "stock": item["item_basic"].get("stock", 0),
-                        "sales": item["item_basic"].get("historical_sold", 0),
-                        "rating": item["item_basic"].get("item_rating", {}).get("rating_star", 0),
-                        "rating_count": item["item_basic"].get("item_rating", {}).get("rating_count", [0])[0],
-                        "image": f"https://cf.shopee.com.br/file/{item['item_basic']['image']}",
-                        "link": f"https://shopee.com.br/product/{item['item_basic']['shopid']}/{item['item_basic']['itemid']}"
-                    } for item in items if items]
-                
-                return []
-        except Exception as e:
-            print(f"Erro na busca: {e}")
-            return [] 
+                    # Formata os dados do produto
+                    return {
+                        "id": item["itemid"],
+                        "name": item["name"],
+                        "description": item.get("description", ""),
+                        "price": item["price"] / 100000,
+                        "original_price": item.get("price_before_discount", 0) / 100000,
+                        "discount": item.get("raw_discount", 0),
+                        "stock": item.get("stock", 0),
+                        "sales": item.get("historical_sold", 0),
+                        "rating": item.get("item_rating", {}).get("rating_star", 0),
+                        "rating_count": sum(item.get("item_rating", {}).get("rating_count", [0])),
+                        "shop_name": item.get("shop_name", ""),
+                        "shop_rating": item.get("shop_rating", 0),
+                        "images": [f"https://cf.shopee.com.br/file/{img}" for img in item.get("images", [])],
+                        "link": url,
+                        "categories": [cat.get("display_name") for cat in item.get("categories", [])]
+                    }
+    except Exception as e:
+        print(f"Erro ao buscar detalhes do produto: {e}")
+        return None 
