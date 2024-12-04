@@ -1,6 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.shopee_api import get_product_details
+import re
 
 def format_price(price: float, original_price: float = 0, discount: int = 0) -> str:
     """Formata o preço com desconto se houver"""
@@ -27,19 +28,36 @@ async def format_product_message(product: dict) -> str:
     ]
     return "\n".join(message)
 
-async def search_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler principal para busca de produtos"""
-    if not context.args:
-        await update.message.reply_text(
-            "🔍 Por favor, envie o link do produto da Shopee.\n"
-            "Exemplo: /buscar https://shopee.com.br/produto..."
-        )
-        return
+def extract_shopee_url(text: str) -> str:
+    """Extrai URL da Shopee do texto"""
+    # Padrões de URL da Shopee
+    patterns = [
+        r'https?://[^\s<>"]+?shopee[^\s<>"]+',
+        r'https?://shope\.ee[^\s<>"]+',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
+    return None
 
-    url = context.args[0]
-    if not "shopee.com.br" in url:
+async def search_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para busca de produtos da Shopee"""
+    # Obtém o texto da mensagem
+    message_text = update.message.text
+    
+    # Se foi usado o comando /buscar, remove o comando do texto
+    if message_text.startswith('/buscar'):
+        message_text = message_text.replace('/buscar', '').strip()
+    
+    # Extrai URL da Shopee
+    url = extract_shopee_url(message_text)
+    
+    if not url:
         await update.message.reply_text(
-            "❌ Link inválido! Por favor, envie um link válido da Shopee Brasil."
+            "🔍 Por favor, envie um link válido da Shopee.\n"
+            "Exemplo: /buscar https://shopee.com.br/produto..."
         )
         return
 
