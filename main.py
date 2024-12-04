@@ -17,7 +17,7 @@ logging.basicConfig(
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-async def main():
+def main():
     # Inicializa o bot
     application = Application.builder().token(TOKEN).build()
 
@@ -29,8 +29,7 @@ async def main():
 
     # Inicia o bot
     print("Iniciando o bot...")
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main()) 
+    main() 
