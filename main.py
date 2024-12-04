@@ -1,4 +1,5 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import Update
 import os
 from dotenv import load_dotenv
 import logging
@@ -16,7 +17,7 @@ logging.basicConfig(
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-async def main():
+def main():
     # Inicializa o bot
     application = Application.builder().token(TOKEN).build()
 
@@ -27,8 +28,8 @@ async def main():
     application.add_handler(CommandHandler("agendar", schedule_message))
 
     # Inicia o bot
-    await application.run_polling()
+    print("Iniciando o bot...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main()) 
+    main() 
