@@ -15,11 +15,11 @@ load_dotenv()
 # Configurações da API da Shopee
 PARTNER_ID = os.getenv('SHOPEE_PARTNER_ID')
 API_KEY = os.getenv('SHOPEE_API_KEY')
-API_BASE = "https://partner.shopeemobile.com/api/v1"
+API_BASE = "https://open-api.affiliate.shopee.com.br/api/v2"
 
 def generate_signature(endpoint: str, timestamp: int) -> str:
     """Gera a assinatura para autenticação na API"""
-    base_string = f"{PARTNER_ID}{endpoint}{timestamp}{API_KEY}"
+    base_string = f"{endpoint}|{timestamp}"
     return hmac.new(
         API_KEY.encode(),
         base_string.encode(),
@@ -30,7 +30,10 @@ async def resolve_short_url(url: str) -> Optional[str]:
     """Resolve URLs curtas da Shopee para a URL completa"""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as response:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
                 if response.status == 200:
                     return str(response.url)
                 print(f"Erro ao resolver URL curta: Status {response.status}")
@@ -103,17 +106,17 @@ async def get_product_details(url: str) -> Optional[Dict]:
 
         shop_id, item_id = product_info
         timestamp = int(time.time())
-        endpoint = "/item/get"
+        endpoint = "/product/get_item_detail"
         signature = generate_signature(endpoint, timestamp)
 
         headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Authorization": signature
         }
         
         params = {
-            "partner_id": int(PARTNER_ID),
+            "partner_id": PARTNER_ID,
             "timestamp": timestamp,
-            "sign": signature,
             "shop_id": shop_id,
             "item_id": item_id
         }
@@ -122,6 +125,7 @@ async def get_product_details(url: str) -> Optional[Dict]:
             api_url = f"{API_BASE}{endpoint}"
             print(f"Fazendo requisição para: {api_url}")
             print(f"Parâmetros: {params}")
+            print(f"Headers: {headers}")
             
             async with session.get(api_url, headers=headers, params=params) as response:
                 response_text = await response.text()
@@ -129,32 +133,31 @@ async def get_product_details(url: str) -> Optional[Dict]:
                 
                 if response.status == 200:
                     data = json.loads(response_text)
-                    if data.get("item"):
-                        item = data["item"]
-                        
-                        # Gera link de afiliado
-                        affiliate_link = await generate_affiliate_link(url)
-                        
-                        return {
-                            'id': item_id,
-                            'name': item.get('name', ''),
-                            'price': float(item.get('price', 0)) / 100000,  # Convertendo para reais
-                            'original_price': float(item.get('original_price', 0)) / 100000,
-                            'discount': calculate_discount(
-                                item.get('price', 0),
-                                item.get('original_price', 0)
-                            ),
-                            'sales': item.get('historical_sold', 0),
-                            'rating': item.get('item_rating', {}).get('rating_star', 0),
-                            'rating_count': sum(item.get('item_rating', {}).get('rating_count', [0])),
-                            'shop_name': item.get('shop_name', ''),
-                            'shop_rating': item.get('shop_rating', 0),
-                            'description': item.get('description', ''),
-                            'stock': item.get('stock', 0),
-                            'link': affiliate_link or url  # Usa URL original se falhar geração do link afiliado
-                        }
-                    else:
-                        print(f"Erro nos dados retornados: {data.get('error_msg', 'Erro desconhecido')}")
+                    if 'error' not in data or data['error'] == 0:
+                        item = data.get('data', {}).get('item', {})
+                        if item:
+                            # Gera link de afiliado
+                            affiliate_link = await generate_affiliate_link(url)
+                            
+                            return {
+                                'id': item_id,
+                                'name': item.get('name', ''),
+                                'price': float(item.get('price', 0)) / 100000,  # Convertendo para reais
+                                'original_price': float(item.get('original_price', 0)) / 100000,
+                                'discount': calculate_discount(
+                                    item.get('price', 0),
+                                    item.get('original_price', 0)
+                                ),
+                                'sales': item.get('historical_sold', 0),
+                                'rating': item.get('item_rating', {}).get('rating_star', 0),
+                                'rating_count': sum(item.get('item_rating', {}).get('rating_count', [0])),
+                                'shop_name': item.get('shop_name', ''),
+                                'shop_rating': item.get('shop_rating', 0),
+                                'description': item.get('description', ''),
+                                'stock': item.get('stock', 0),
+                                'link': affiliate_link or url  # Usa URL original se falhar geração do link afiliado
+                            }
+                    print(f"Erro nos dados retornados: {data.get('message', 'Erro desconhecido')}")
                 else:
                     print(f"Erro na requisição: Status {response.status}")
         return None
@@ -170,24 +173,29 @@ async def generate_affiliate_link(url: str) -> Optional[str]:
         signature = generate_signature(endpoint, timestamp)
         
         headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Authorization": signature
         }
         
         data = {
-            "partner_id": int(PARTNER_ID),
+            "partner_id": PARTNER_ID,
             "timestamp": timestamp,
-            "sign": signature,
             "original_url": url
         }
         
         async with aiohttp.ClientSession() as session:
             api_url = f"{API_BASE}{endpoint}"
+            print(f"Gerando link afiliado: {api_url}")
+            print(f"Dados: {data}")
+            
             async with session.post(api_url, headers=headers, json=data) as response:
+                response_text = await response.text()
+                print(f"Resposta da API (generate_affiliate_link): {response_text}")
+                
                 if response.status == 200:
-                    result = await response.json()
-                    if result.get("affiliate_link"):
-                        return result["affiliate_link"]
-                print(f"Resposta da API (generate_affiliate_link): {await response.text()}")
+                    result = json.loads(response_text)
+                    if 'error' not in result or result['error'] == 0:
+                        return result.get('data', {}).get('affiliate_link')
         return None
     except Exception as e:
         print(f"Erro ao gerar link afiliado: {str(e)}")
