@@ -17,6 +17,21 @@ PARTNER_ID = os.getenv('SHOPEE_PARTNER_ID')
 API_KEY = os.getenv('SHOPEE_API_KEY')
 API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 
+def generate_auth_params(timestamp: int) -> Dict:
+    """Gera os parâmetros de autenticação para a API da Shopee"""
+    base_string = f"{PARTNER_ID}{timestamp}{API_KEY}"
+    signature = hmac.new(
+        API_KEY.encode(),
+        base_string.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    
+    return {
+        "id": PARTNER_ID,
+        "signature": signature,
+        "timestamp": str(timestamp)
+    }
+
 async def resolve_short_url(url: str) -> Optional[str]:
     """Resolve URLs curtas da Shopee para a URL completa"""
     try:
@@ -116,76 +131,110 @@ async def get_product_details(url: str) -> Optional[Dict]:
 
         shop_id, item_id = product_info
         
-        # Query GraphQL para obter detalhes do produto
+        # Gera parâmetros de autenticação
+        timestamp = int(time.time())
+        auth_params = generate_auth_params(timestamp)
+        
+        # Query GraphQL
         query = """
-            query GetProductDetails($shopId: Int!, $itemId: Int!) {
-                product(shopId: $shopId, itemId: $itemId) {
-                    itemId
+        query GetItemDetail($shopId: String!, $itemId: String!) {
+            getItemDetail(shopId: $shopId, itemId: $itemId) {
+                item {
+                    itemid
+                    shopid
                     name
-                    price
-                    stock
-                    description
+                    image
                     images
-                    rating
-                    historicalSold
-                    shop {
+                    currency
+                    stock
+                    status
+                    ctime
+                    sold
+                    historical_sold
+                    liked_count
+                    price
+                    price_min
+                    price_max
+                    price_before_discount
+                    show_discount
+                    raw_discount
+                    discount
+                    shop_name
+                    brand
+                    item_status
+                    price_min_before_discount
+                    price_max_before_discount
+                    has_lowest_price_guarantee
+                    show_free_shipping
+                    description
+                    attributes {
                         name
+                        value
+                    }
+                    rating_star
+                    rating_count {
                         rating
+                        count
                     }
                 }
             }
+        }
         """
         
-        # Gera timestamp e assinatura
-        timestamp = int(time.time())
-        signature = hmac.new(
-            API_KEY.encode(),
-            f"{PARTNER_ID}{timestamp}{API_KEY}".encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        # Prepara headers e payload
+        # Prepara a requisição
         headers = {
             "Content-Type": "application/json",
-            "Authorization": signature,
-            "X-Shopee-Partner-Id": PARTNER_ID,
-            "X-Shopee-Timestamp": str(timestamp)
+            "X-Shopee-Client-Id": auth_params["id"],
+            "X-Shopee-Client-Signature": auth_params["signature"],
+            "X-Shopee-Client-Timestamp": auth_params["timestamp"]
+        }
+        
+        variables = {
+            "shopId": str(shop_id),
+            "itemId": str(item_id)
         }
         
         payload = {
             "query": query,
-            "variables": {
-                "shopId": shop_id,
-                "itemId": item_id
-            }
+            "variables": variables
         }
+        
+        print(f"Headers: {json.dumps(headers, indent=2)}")
+        print(f"Payload: {json.dumps(payload, indent=2)}")
         
         # Faz a requisição GraphQL
         async with aiohttp.ClientSession() as session:
             async with session.post(API_URL, headers=headers, json=payload) as response:
+                response_text = await response.text()
+                print(f"Resposta da API: {response_text}")
+                
                 if response.status == 200:
-                    data = await response.json()
-                    print(f"Resposta GraphQL: {json.dumps(data, indent=2)}")
-                    
-                    if data.get('data', {}).get('product'):
-                        product = data['data']['product']
+                    data = json.loads(response_text)
+                    if "errors" in data:
+                        print(f"Erro na resposta GraphQL: {data['errors']}")
+                        return None
+                        
+                    if data.get("data", {}).get("getItemDetail", {}).get("item"):
+                        item = data["data"]["getItemDetail"]["item"]
                         return {
                             'id': item_id,
-                            'name': product.get('name', ''),
-                            'price': float(product.get('price', 0)) / 100000,  # Convertendo para reais
-                            'stock': product.get('stock', 0),
-                            'description': product.get('description', ''),
-                            'sales': product.get('historicalSold', 0),
-                            'rating': product.get('rating', 0),
-                            'shop_name': product.get('shop', {}).get('name', ''),
-                            'shop_rating': product.get('shop', {}).get('rating', 0),
-                            'link': url  # Por enquanto, usa a URL original
+                            'name': item.get('name', ''),
+                            'price': float(item.get('price', 0)) / 100000,  # Convertendo para reais
+                            'original_price': float(item.get('price_before_discount', 0)) / 100000,
+                            'discount': item.get('raw_discount', 0),
+                            'stock': item.get('stock', 0),
+                            'description': item.get('description', ''),
+                            'sales': item.get('historical_sold', 0),
+                            'rating': item.get('rating_star', 0),
+                            'rating_count': sum(rc.get('count', 0) for rc in item.get('rating_count', [])),
+                            'shop_name': item.get('shop_name', ''),
+                            'shop_rating': 5.0,  # Temporário
+                            'link': url
                         }
                     
                     print("Dados do produto não encontrados na resposta")
                 else:
-                    print(f"Erro na requisição GraphQL: Status {response.status}")
-                    print(await response.text())
+                    print(f"Erro na requisição: Status {response.status}")
                 
         return None
     except Exception as e:
