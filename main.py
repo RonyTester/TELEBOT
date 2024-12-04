@@ -1,5 +1,4 @@
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import os
 from dotenv import load_dotenv
 import logging
@@ -19,17 +18,19 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 def main():
     # Inicializa o bot
-    application = Application.builder().token(TOKEN).build()
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
 
     # Adiciona handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("buscar", search_products))
-    application.add_handler(CommandHandler("agendar", schedule_message))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("buscar", search_products))
+    dp.add_handler(CommandHandler("agendar", schedule_message))
 
     # Inicia o bot
     print("Iniciando o bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main() 
