@@ -6,11 +6,23 @@ import hashlib
 import hmac
 import json
 
+# Carrega variáveis de ambiente
 load_dotenv()
 
 # Configurações da API da Shopee
-PARTNER_ID = int(os.getenv('SHOPEE_PARTNER_ID'))
+PARTNER_ID = os.getenv('SHOPEE_PARTNER_ID')
 API_KEY = os.getenv('SHOPEE_API_KEY')
+
+# Validação das credenciais
+if not PARTNER_ID or not API_KEY:
+    raise ValueError(
+        "Credenciais da API Shopee não encontradas! "
+        "Certifique-se de que SHOPEE_PARTNER_ID e SHOPEE_API_KEY "
+        "estão definidos nas variáveis de ambiente."
+    )
+
+# Converte PARTNER_ID para inteiro após validação
+PARTNER_ID = int(PARTNER_ID)
 API_BASE = "https://open-api.affiliate.shopee.com.br/api/v2"
 
 def generate_signature(endpoint, timestamp):
@@ -25,6 +37,7 @@ async def get_product_details(url):
         # Extrai os IDs do produto da URL
         ids = extract_product_ids(url)
         if not ids:
+            print(f"Não foi possível extrair IDs da URL: {url}")
             return None
 
         shop_id, item_id = ids
@@ -48,15 +61,21 @@ async def get_product_details(url):
             }
 
             api_url = f"{API_BASE}{endpoint}"
+            print(f"Fazendo requisição para: {api_url}")
+            print(f"Parâmetros: {params}")
+            
             async with session.get(api_url, headers=headers, params=params) as response:
+                response_text = await response.text()
+                print(f"Resposta da API: {response_text}")
+                
                 if response.status == 200:
-                    data = await response.json()
+                    data = json.loads(response_text)
                     if data.get('error') == 0 and 'item' in data.get('data', {}):
                         item = data['data']['item']
                         return {
                             'id': item_id,
                             'name': item.get('name'),
-                            'price': float(item.get('price')) / 100000,  # Convertendo para reais
+                            'price': float(item.get('price', 0)) / 100000,  # Convertendo para reais
                             'original_price': float(item.get('original_price', 0)) / 100000,
                             'discount': calculate_discount(item.get('price'), item.get('original_price')),
                             'sales': item.get('historical_sold', 0),
@@ -67,10 +86,13 @@ async def get_product_details(url):
                             'description': item.get('description', ''),
                             'link': generate_affiliate_link(url, shop_id, item_id)
                         }
-                print(f"Resposta da API: {await response.text()}")
+                    else:
+                        print(f"Erro nos dados retornados: {data.get('error_msg', 'Erro desconhecido')}")
+                else:
+                    print(f"Erro na requisição: Status {response.status}")
         return None
     except Exception as e:
-        print(f"Erro ao buscar produto: {e}")
+        print(f"Erro ao buscar produto: {str(e)}")
         return None
 
 def extract_product_ids(url):
@@ -91,19 +113,22 @@ def extract_product_ids(url):
         
         if shop_id and item_id:
             return (shop_id, item_id)
+        print(f"IDs não encontrados na URL: {url}")
         return None
-    except:
+    except Exception as e:
+        print(f"Erro ao extrair IDs: {str(e)}")
         return None
 
 def calculate_discount(current_price, original_price):
     """Calcula o percentual de desconto"""
     try:
-        current_price = float(current_price)
-        original_price = float(original_price)
+        current_price = float(current_price or 0)
+        original_price = float(original_price or 0)
         if not original_price or not current_price or original_price <= current_price:
             return 0
         return int(((original_price - current_price) / original_price) * 100)
-    except:
+    except Exception as e:
+        print(f"Erro ao calcular desconto: {str(e)}")
         return 0
 
 def generate_affiliate_link(url, shop_id, item_id):
@@ -113,5 +138,6 @@ def generate_affiliate_link(url, shop_id, item_id):
         base_url = f"https://shope.ee/affiliate/{PARTNER_ID}"
         product_path = f"product/{shop_id}/{item_id}"
         return f"{base_url}/{product_path}"
-    except:
-        return url  # Retorna a URL original em caso de erro 
+    except Exception as e:
+        print(f"Erro ao gerar link de afiliado: {str(e)}")
+        return url  # Retorna a URL original em caso de erro
