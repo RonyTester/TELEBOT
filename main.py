@@ -1,9 +1,9 @@
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram import Update
 import os
 from dotenv import load_dotenv
 import logging
-from handlers.commands import start, help_command
+from handlers.commands import start, help_command, menu_handler
 from handlers.shopee import search_products
 from handlers.scheduler import schedule_message
 
@@ -26,6 +26,9 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("buscar", search_products))
     application.add_handler(CommandHandler("agendar", schedule_message))
+    
+    # Adiciona handler para os menus
+    application.add_handler(CallbackQueryHandler(menu_handler))
 
     # Inicia o bot
     print("Iniciando o bot...")
