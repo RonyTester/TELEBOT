@@ -1,7 +1,8 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
+from handlers.shopee import search_by_category, show_products
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_main_menu_keyboard():
     keyboard = [
         [
             InlineKeyboardButton("🔍 Buscar Produtos", callback_data="menu_buscar"),
@@ -15,13 +16,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❓ Ajuda", callback_data="menu_ajuda")
         ]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
         "👋 Olá! Sou o bot Divulgador.\n\n"
-        "Escolha uma opção abaixo:",
-        reply_markup=reply_markup
+        "Escolha uma opção abaixo:"
     )
+    
+    if update.callback_query:
+        await update.callback_query.message.edit_text(
+            text=text,
+            reply_markup=get_main_menu_keyboard()
+        )
+    else:
+        await update.message.reply_text(
+            text=text,
+            reply_markup=get_main_menu_keyboard()
+        )
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -38,7 +50,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔄 Últimas Buscas", callback_data="buscar_historico")
             ],
             [
-                InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_principal")
+                InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -48,6 +60,51 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+    
+    elif query.data == "buscar_shopee":
+        keyboard = [
+            [
+                InlineKeyboardButton("📱 Eletrônicos", callback_data="shopee_eletronicos"),
+                InlineKeyboardButton("👕 Moda", callback_data="shopee_moda")
+            ],
+            [
+                InlineKeyboardButton("🏠 Casa", callback_data="shopee_casa"),
+                InlineKeyboardButton("🎮 Games", callback_data="shopee_games")
+            ],
+            [
+                InlineKeyboardButton("🔍 Busca Livre", callback_data="shopee_busca_livre")
+            ],
+            [
+                InlineKeyboardButton("🔙 Voltar", callback_data="menu_buscar")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🛍️ *Produtos Shopee*\n\n"
+            "Escolha uma categoria ou faça uma busca livre:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    elif query.data.startswith("shopee_"):
+        categoria = query.data.replace("shopee_", "")
+        if categoria == "busca_livre":
+            keyboard = [[InlineKeyboardButton("🔙 Voltar", callback_data="buscar_shopee")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "🔍 *Busca Livre*\n\n"
+                "Digite o que você quer buscar:\n"
+                "Exemplo: `/buscar celular samsung`",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            # Busca produtos da categoria
+            produtos = await search_by_category(update, context, categoria)
+            await show_products(update, context, produtos)
+    
+    elif query.data == "menu_principal":
+        await start(update, context)
     
     elif query.data == "menu_favoritos":
         keyboard = [
@@ -60,7 +117,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🗑️ Gerenciar", callback_data="favoritos_gerenciar")
             ],
             [
-                InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_principal")
+                InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -82,7 +139,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🗑️ Gerenciar", callback_data="agenda_gerenciar")
             ],
             [
-                InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_principal")
+                InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -104,7 +161,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("⚙️ Geral", callback_data="config_geral")
             ],
             [
-                InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_principal")
+                InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -114,10 +171,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-    
-    elif query.data == "menu_principal":
-        # Volta para o menu principal
-        await start(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
