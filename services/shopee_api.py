@@ -1,44 +1,18 @@
-import aiohttp
-import json
-from typing import Dict, Optional
+from playwright.async_api import async_playwright
 import re
-import time
-import random
-
-async def get_shopee_cookies() -> Dict[str, str]:
-    """Obtém cookies necessários para a API da Shopee"""
-    base_url = "https://shopee.com.br"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "sec-ch-ua-platform": '"Windows"'
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(base_url, headers=headers) as response:
-            cookies = response.cookies
-            cookie_dict = {cookie.key: cookie.value for cookie in cookies.values()}
-            
-            # Adiciona SPC_EC para simular um usuário logado
-            cookie_dict["SPC_EC"] = "-"
-            return cookie_dict
+from typing import Dict, Optional
+import json
+import asyncio
 
 async def extract_product_info_from_url(url: str) -> Optional[Dict]:
     """
     Extrai shopid e itemid do link da Shopee
-    Exemplo: https://shopee.com.br/produto-nome-i.123456789.987654321
     """
-    # Remove parâmetros da URL
     url = url.split('?')[0]
-    
-    # Tenta diferentes padrões de URL
     patterns = [
-        r"i\.(\d+)\.(\d+)",  # Padrão normal
-        r"/i\.(\d+)\.(\d+)",  # Com barra
-        r"-i\.(\d+)\.(\d+)",  # Com hífen
+        r"i\.(\d+)\.(\d+)",
+        r"/i\.(\d+)\.(\d+)",
+        r"-i\.(\d+)\.(\d+)",
     ]
     
     for pattern in patterns:
@@ -54,86 +28,76 @@ async def extract_product_info_from_url(url: str) -> Optional[Dict]:
 
 async def get_product_details(url: str) -> Optional[Dict]:
     """
-    Busca detalhes de um produto específico da Shopee usando a API pública
+    Busca detalhes de um produto usando Playwright para simular um navegador real
     """
-    product_info = await extract_product_info_from_url(url)
-    if not product_info:
-        return None
-    
-    # Gera um ID de sessão aleatório
-    session_id = f"{int(time.time())}.{random.randint(100000, 999999)}"
-    
-    base_url = "https://shopee.com.br/api/v4/item/get"
-    params = {
-        "itemid": product_info["item_id"],
-        "shopid": product_info["shop_id"]
-    }
-    
-    # Obtém cookies frescos
-    cookies = await get_shopee_cookies()
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Referer": url,
-        "X-Shopee-Language": "pt-BR",
-        "X-API-SOURCE": "pc",
-        "X-Requested-With": "XMLHttpRequest",
-        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "sec-ch-ua-platform": '"Windows"',
-        "X-CSRFToken": cookies.get("csrftoken", ""),
-        "sz-token": session_id
-    }
-    
     try:
-        async with aiohttp.ClientSession() as session:
-            print(f"Fazendo requisição para: {base_url}")
-            print(f"Params: {params}")
-            print(f"Headers: {headers}")
-            print(f"Cookies: {cookies}")
+        async with async_playwright() as p:
+            # Inicia o navegador em modo headless
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             
-            async with session.get(
-                base_url,
-                params=params,
-                headers=headers,
-                cookies=cookies,
-                allow_redirects=True
-            ) as response:
-                print(f"Status: {response.status}")
+            # Cria uma nova página
+            page = await context.new_page()
+            
+            print(f"Acessando URL: {url}")
+            
+            # Navega até a página do produto
+            await page.goto(url, wait_until="networkidle")
+            
+            # Espera elementos importantes carregarem
+            await page.wait_for_selector("._44qnta", timeout=10000)  # Nome do produto
+            await page.wait_for_selector("._3n5NQx", timeout=10000)  # Preço
+            
+            # Extrai dados usando JavaScript
+            product_data = await page.evaluate("""() => {
+                function getText(selector, defaultValue = '') {
+                    const element = document.querySelector(selector);
+                    return element ? element.innerText.trim() : defaultValue;
+                }
                 
-                if response.status == 200:
-                    data = await response.json()
-                    print(f"Resposta: {json.dumps(data, indent=2)}")
-                    
-                    if "item" not in data or not data["item"]:
-                        print("Nenhum dado retornado da API")
-                        return None
-                    
-                    item = data["item"]
-                    
-                    # Formata os dados do produto
-                    return {
-                        "id": item["itemid"],
-                        "name": item["name"],
-                        "description": item.get("description", ""),
-                        "price": float(item["price"]) / 100000,
-                        "original_price": float(item.get("price_before_discount", 0)) / 100000,
-                        "discount": item.get("raw_discount", 0),
-                        "stock": item.get("stock", 0),
-                        "sales": item.get("historical_sold", 0),
-                        "rating": item.get("item_rating", {}).get("rating_star", 0),
-                        "rating_count": sum(item.get("item_rating", {}).get("rating_count", [0])),
-                        "shop_name": item.get("shop_location", ""),
-                        "shop_rating": item.get("shop_rating", 0),
-                        "images": [f"https://cf.shopee.com.br/file/{img}" for img in item.get("images", [])],
-                        "link": url,
-                        "categories": [cat.get("display_name", "") for cat in item.get("categories", [])]
-                    }
-                else:
-                    print(f"Erro na API: Status {response.status}")
-                    print(f"Resposta: {await response.text()}")
-                    return None
+                function getPrice(selector) {
+                    const text = getText(selector, '0');
+                    return parseFloat(text.replace('R$', '').replace('.', '').replace(',', '.'));
+                }
+                
+                const priceElement = document.querySelector('._3n5NQx');
+                const originalPriceElement = document.querySelector('._1_FtxE');
+                
+                return {
+                    name: getText('._44qnta'),
+                    price: getPrice('._3n5NQx'),
+                    original_price: originalPriceElement ? getPrice('._1_FtxE') : 0,
+                    description: getText('.f7AU53'),
+                    shop_name: getText('.VlDReK'),
+                    rating: parseFloat(getText('._1k47d8', '0')),
+                    rating_count: parseInt(getText('._1k47d8 + div', '0')),
+                    sales: parseInt(getText('._2y51f5', '0')),
+                    stock: parseInt(getText('._2y51f5 + div', '0')),
+                    categories: Array.from(document.querySelectorAll('._3YDLCj')).map(el => el.innerText),
+                    images: Array.from(document.querySelectorAll('._2y51f5 img')).map(img => img.src)
+                };
+            }""")
+            
+            print(f"Dados extraídos: {json.dumps(product_data, indent=2)}")
+            
+            # Fecha o navegador
+            await browser.close()
+            
+            # Adiciona informações extras
+            product_data["link"] = url
+            
+            # Calcula desconto se houver preço original
+            if product_data["original_price"] > product_data["price"]:
+                discount = ((product_data["original_price"] - product_data["price"]) / product_data["original_price"]) * 100
+                product_data["discount"] = round(discount)
+            else:
+                product_data["discount"] = 0
+            
+            return product_data
+            
     except Exception as e:
-        print(f"Erro ao buscar detalhes do produto: {e}")
+        print(f"Erro ao extrair dados do produto: {e}")
         return None 
