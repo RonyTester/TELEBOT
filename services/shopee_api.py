@@ -55,16 +55,19 @@ def extract_product_info(url: str) -> Optional[Tuple[int, int]]:
     Suporta vários formatos de URL da Shopee
     """
     try:
+        # Remove parâmetros de query e decode a URL
+        from urllib.parse import unquote
+        clean_url = unquote(url.split('?')[0])
+        print(f"URL limpa: {clean_url}")
+        
         # Padrões de extração de IDs
         patterns = [
             r"i\.(\d+)\.(\d+)",  # Formato curto (i.SHOP_ID.ITEM_ID)
             r"/product/(\d+)/(\d+)",  # Formato completo (/product/SHOP_ID/ITEM_ID)
             r"-i\.(\d+)\.(\d+)",  # Formato alternativo (-i.SHOP_ID.ITEM_ID)
             r"\.(\d+)\.(\d+)$",  # Formato no final da URL (.SHOP_ID.ITEM_ID)
+            r"(?:/|-)i\.(\d+)\.(\d+)(?:/|$)",  # Formato com prefixo/sufixo
         ]
-        
-        # Remove parâmetros de query da URL
-        clean_url = url.split('?')[0]
         
         # Tenta cada padrão
         for pattern in patterns:
@@ -84,6 +87,20 @@ def extract_product_info(url: str) -> Optional[Tuple[int, int]]:
             item_id = int(query_params['item_id'][0])
             print(f"IDs extraídos da query: shop_id={shop_id}, item_id={item_id}")
             return shop_id, item_id
+        
+        # Tenta extrair do final da URL
+        parts = clean_url.split('-i.')
+        if len(parts) > 1:
+            last_part = parts[-1]
+            id_parts = last_part.split('.')
+            if len(id_parts) >= 2:
+                try:
+                    shop_id = int(id_parts[0])
+                    item_id = int(id_parts[1].split('?')[0])
+                    print(f"IDs extraídos do final: shop_id={shop_id}, item_id={item_id}")
+                    return shop_id, item_id
+                except ValueError:
+                    pass
             
         print(f"Nenhum padrão conhecido encontrado na URL: {url}")
         return None

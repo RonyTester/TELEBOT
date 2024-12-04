@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from services.shopee_api import get_product_details
+from services.shopee_api import get_product_details, extract_product_info
 import re
 
 def format_price(price: float, original_price: float = 0, discount: int = 0) -> str:
@@ -18,9 +18,9 @@ async def format_product_message(product: dict) -> str:
     """Formata a mensagem do produto no estilo do Divulgador Inteligente"""
     message = [
         f"📦 *{product['name']}*\n",
-        format_price(product['price'], product['original_price'], product['discount']),
+        format_price(product['price'], product.get('original_price', 0), product.get('discount', 0)),
         f"📊 Vendidos: {product['sales']}",
-        format_rating(product['rating'], product['rating_count']),
+        format_rating(product['rating'], product.get('rating_count', 0)),
         f"\n🏪 Loja: {product['shop_name']}",
         f"⭐ Avaliação da Loja: {product['shop_rating']:.1f}",
         f"\n📝 Descrição: {product['description'][:200]}..." if len(product['description']) > 200 else f"\n📝 Descrição: {product['description']}",
@@ -32,33 +32,29 @@ def extract_shopee_url(text: str) -> str:
     """Extrai URL da Shopee do texto"""
     # Padrões de URL da Shopee
     patterns = [
-        r'https?://[^\s<>"]+?shopee[^\s<>"]+',
+        r'https?://[^\s<>"]+?shopee\.com\.br[^\s<>"]+',
         r'https?://shope\.ee[^\s<>"]+',
+        r'https?://s\.shopee[^\s<>"]+',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            return match.group(0)
+            url = match.group(0)
+            # Remove parâmetros desnecessários da URL
+            clean_url = url.split('?')[0]
+            return clean_url
     return None
 
-async def search_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para busca de produtos da Shopee"""
-    # Obtém o texto da mensagem
+async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Processa mensagens procurando por links da Shopee"""
     message_text = update.message.text
-    
-    # Se foi usado o comando /buscar, remove o comando do texto
-    if message_text.startswith('/buscar'):
-        message_text = message_text.replace('/buscar', '').strip()
     
     # Extrai URL da Shopee
     url = extract_shopee_url(message_text)
     
     if not url:
-        await update.message.reply_text(
-            "🔍 Por favor, envie um link válido da Shopee.\n"
-            "Exemplo: /buscar https://shopee.com.br/produto..."
-        )
+        # Ignora mensagens sem links da Shopee
         return
 
     try:
@@ -96,4 +92,9 @@ async def search_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "😅 Ops! Ocorreu um erro ao buscar o produto.\n"
             "Por favor, verifique se o link está correto e tente novamente."
-        ) 
+        )
+
+# Mantém a função search_products para compatibilidade, mas redireciona para process_message
+async def search_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para o comando /buscar (mantido para compatibilidade)"""
+    await process_message(update, context) 

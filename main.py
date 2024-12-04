@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import logging
 import sys
 from handlers.commands import start, help_command, menu_handler
-from handlers.shopee import search_products
+from handlers.shopee import search_products, process_message
 from handlers.scheduler import schedule_message
 
 # Configuração de logging
@@ -29,7 +29,7 @@ if not TOKEN:
 async def error_handler(update: Update, context):
     """Trata erros do bot de forma global"""
     logger.error(f"Erro durante o processamento: {context.error}")
-    if update:
+    if update and update.message:
         await update.message.reply_text(
             "😅 Ops! Ocorreu um erro ao processar sua solicitação.\n"
             "Por favor, tente novamente mais tarde."
@@ -48,6 +48,9 @@ def main():
         
         # Adiciona handler para os menus
         application.add_handler(CallbackQueryHandler(menu_handler))
+
+        # Adiciona handler para processar todas as mensagens
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_message))
 
         # Adiciona handler de erro global
         application.add_error_handler(error_handler)
