@@ -1,6 +1,6 @@
 language = "python3"
 run = "python main.py"
-modules = ["python-3.11", "python-3.12"]
+modules = ["python-3.11:v3.11.5-1"]
 
 [deployment]
 run = ["sh", "-c", "python main.py"]
