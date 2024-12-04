@@ -1,103 +1,117 @@
-from playwright.async_api import async_playwright
-import re
-from typing import Dict, Optional
+import aiohttp
+import os
+from dotenv import load_dotenv
+import time
+import hashlib
+import hmac
 import json
-import asyncio
 
-async def extract_product_info_from_url(url: str) -> Optional[Dict]:
-    """
-    Extrai shopid e itemid do link da Shopee
-    """
-    url = url.split('?')[0]
-    patterns = [
-        r"i\.(\d+)\.(\d+)",
-        r"/i\.(\d+)\.(\d+)",
-        r"-i\.(\d+)\.(\d+)",
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return {
-                "shop_id": match.group(1),
-                "item_id": match.group(2)
-            }
-    
-    print(f"Não foi possível extrair IDs da URL: {url}")
-    return None
+load_dotenv()
 
-async def get_product_details(url: str) -> Optional[Dict]:
-    """
-    Busca detalhes de um produto usando Playwright para simular um navegador real
-    """
+# Configurações da API da Shopee
+PARTNER_ID = int(os.getenv('SHOPEE_PARTNER_ID'))
+API_KEY = os.getenv('SHOPEE_API_KEY')
+API_BASE = "https://open-api.affiliate.shopee.com.br/api/v2"
+
+def generate_signature(endpoint, timestamp):
+    """Gera a assinatura necessária para autenticação na API"""
+    base_string = f"{PARTNER_ID}{endpoint}{timestamp}"
+    sign = hmac.new(API_KEY.encode(), base_string.encode(), hashlib.sha256).hexdigest()
+    return sign
+
+async def get_product_details(url):
+    """Obtém detalhes do produto usando a API oficial da Shopee"""
     try:
-        async with async_playwright() as p:
-            # Inicia o navegador em modo headless
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
+        # Extrai os IDs do produto da URL
+        ids = extract_product_ids(url)
+        if not ids:
+            return None
+
+        shop_id, item_id = ids
+        timestamp = int(time.time())
+        endpoint = "/product/get_item_detail"
+        
+        # Gera a assinatura
+        signature = generate_signature(endpoint, timestamp)
+
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Content-Type": "application/json"
+            }
             
-            # Cria uma nova página
-            page = await context.new_page()
-            
-            print(f"Acessando URL: {url}")
-            
-            # Navega até a página do produto
-            await page.goto(url, wait_until="networkidle")
-            
-            # Espera elementos importantes carregarem
-            await page.wait_for_selector("._44qnta", timeout=10000)  # Nome do produto
-            await page.wait_for_selector("._3n5NQx", timeout=10000)  # Preço
-            
-            # Extrai dados usando JavaScript
-            product_data = await page.evaluate("""() => {
-                function getText(selector, defaultValue = '') {
-                    const element = document.querySelector(selector);
-                    return element ? element.innerText.trim() : defaultValue;
-                }
-                
-                function getPrice(selector) {
-                    const text = getText(selector, '0');
-                    return parseFloat(text.replace('R$', '').replace('.', '').replace(',', '.'));
-                }
-                
-                const priceElement = document.querySelector('._3n5NQx');
-                const originalPriceElement = document.querySelector('._1_FtxE');
-                
-                return {
-                    name: getText('._44qnta'),
-                    price: getPrice('._3n5NQx'),
-                    original_price: originalPriceElement ? getPrice('._1_FtxE') : 0,
-                    description: getText('.f7AU53'),
-                    shop_name: getText('.VlDReK'),
-                    rating: parseFloat(getText('._1k47d8', '0')),
-                    rating_count: parseInt(getText('._1k47d8 + div', '0')),
-                    sales: parseInt(getText('._2y51f5', '0')),
-                    stock: parseInt(getText('._2y51f5 + div', '0')),
-                    categories: Array.from(document.querySelectorAll('._3YDLCj')).map(el => el.innerText),
-                    images: Array.from(document.querySelectorAll('._2y51f5 img')).map(img => img.src)
-                };
-            }""")
-            
-            print(f"Dados extraídos: {json.dumps(product_data, indent=2)}")
-            
-            # Fecha o navegador
-            await browser.close()
-            
-            # Adiciona informações extras
-            product_data["link"] = url
-            
-            # Calcula desconto se houver preço original
-            if product_data["original_price"] > product_data["price"]:
-                discount = ((product_data["original_price"] - product_data["price"]) / product_data["original_price"]) * 100
-                product_data["discount"] = round(discount)
-            else:
-                product_data["discount"] = 0
-            
-            return product_data
-            
+            params = {
+                "partner_id": PARTNER_ID,
+                "timestamp": timestamp,
+                "sign": signature,
+                "shop_id": shop_id,
+                "item_id": item_id
+            }
+
+            api_url = f"{API_BASE}{endpoint}"
+            async with session.get(api_url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('error') == 0 and 'item' in data.get('data', {}):
+                        item = data['data']['item']
+                        return {
+                            'id': item_id,
+                            'name': item.get('name'),
+                            'price': float(item.get('price')) / 100000,  # Convertendo para reais
+                            'original_price': float(item.get('original_price', 0)) / 100000,
+                            'discount': calculate_discount(item.get('price'), item.get('original_price')),
+                            'sales': item.get('historical_sold', 0),
+                            'rating': item.get('item_rating', {}).get('rating_star', 0),
+                            'rating_count': sum(item.get('item_rating', {}).get('rating_count', [0])),
+                            'shop_name': item.get('shop_name', ''),
+                            'shop_rating': item.get('shop_rating', 0),
+                            'description': item.get('description', ''),
+                            'link': generate_affiliate_link(url, shop_id, item_id)
+                        }
+                print(f"Resposta da API: {await response.text()}")
+        return None
     except Exception as e:
-        print(f"Erro ao extrair dados do produto: {e}")
-        return None 
+        print(f"Erro ao buscar produto: {e}")
+        return None
+
+def extract_product_ids(url):
+    """Extrai shop_id e item_id da URL da Shopee"""
+    try:
+        # Formato esperado: https://shopee.com.br/product/SHOP_ID/ITEM_ID
+        parts = url.split('/')
+        shop_id = None
+        item_id = None
+        
+        for i, part in enumerate(parts):
+            if part.isdigit():
+                if not shop_id:
+                    shop_id = int(part)
+                else:
+                    item_id = int(part)
+                    break
+        
+        if shop_id and item_id:
+            return (shop_id, item_id)
+        return None
+    except:
+        return None
+
+def calculate_discount(current_price, original_price):
+    """Calcula o percentual de desconto"""
+    try:
+        current_price = float(current_price)
+        original_price = float(original_price)
+        if not original_price or not current_price or original_price <= current_price:
+            return 0
+        return int(((original_price - current_price) / original_price) * 100)
+    except:
+        return 0
+
+def generate_affiliate_link(url, shop_id, item_id):
+    """Gera o link de afiliado para o produto"""
+    try:
+        # Formato do link de afiliado da Shopee
+        base_url = f"https://shope.ee/affiliate/{PARTNER_ID}"
+        product_path = f"product/{shop_id}/{item_id}"
+        return f"{base_url}/{product_path}"
+    except:
+        return url  # Retorna a URL original em caso de erro 
