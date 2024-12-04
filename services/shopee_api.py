@@ -1,13 +1,15 @@
-import aiohttp
 import os
 from dotenv import load_dotenv
 import time
-import hashlib
 import hmac
+import hashlib
 import json
 import re
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse, parse_qs
+from gql import gql, Client
+from gql.transport.aiohttp import AIOHTTPTransport
+from gql.transport.exceptions import TransportQueryError
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -15,32 +17,37 @@ load_dotenv()
 # Configurações da API da Shopee
 PARTNER_ID = os.getenv('SHOPEE_PARTNER_ID')
 API_KEY = os.getenv('SHOPEE_API_KEY')
-API_BASE = "https://open-api.affiliate.shopee.com.br/api/v2"
+API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 
-def generate_signature(endpoint: str, timestamp: int) -> str:
+def generate_signature(timestamp: int) -> str:
     """Gera a assinatura para autenticação na API"""
-    base_string = f"{endpoint}|{timestamp}"
+    base_string = f"{PARTNER_ID}{timestamp}{API_KEY}"
     return hmac.new(
         API_KEY.encode(),
         base_string.encode(),
         hashlib.sha256
     ).hexdigest()
 
-async def resolve_short_url(url: str) -> Optional[str]:
-    """Resolve URLs curtas da Shopee para a URL completa"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            async with session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status == 200:
-                    return str(response.url)
-                print(f"Erro ao resolver URL curta: Status {response.status}")
-                return None
-    except Exception as e:
-        print(f"Erro ao resolver URL curta: {str(e)}")
-        return None
+async def get_graphql_client() -> Client:
+    """Cria e retorna um cliente GraphQL configurado"""
+    timestamp = int(time.time())
+    signature = generate_signature(timestamp)
+    
+    # Configura o transporte com os headers necessários
+    transport = AIOHTTPTransport(
+        url=API_URL,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": signature,
+            "X-Shopee-Partner-Id": PARTNER_ID,
+            "X-Shopee-Timestamp": str(timestamp)
+        }
+    )
+    
+    return Client(
+        transport=transport,
+        fetch_schema_from_transport=True
+    )
 
 def extract_product_info(url: str) -> Optional[Tuple[int, int]]:
     """
@@ -85,19 +92,8 @@ def extract_product_info(url: str) -> Optional[Tuple[int, int]]:
         return None
 
 async def get_product_details(url: str) -> Optional[Dict]:
-    """Obtém detalhes do produto usando a API oficial da Shopee"""
+    """Obtém detalhes do produto usando a API GraphQL da Shopee"""
     try:
-        # Se for uma URL curta, resolve para a URL completa
-        if 's.shopee' in url:
-            print("Detectada URL curta, resolvendo...")
-            resolved_url = await resolve_short_url(url)
-            if resolved_url:
-                url = resolved_url
-                print(f"URL resolvida: {url}")
-            else:
-                print("Não foi possível resolver a URL curta")
-                return None
-
         # Extrai IDs do produto
         product_info = extract_product_info(url)
         if not product_info:
@@ -105,110 +101,107 @@ async def get_product_details(url: str) -> Optional[Dict]:
             return None
 
         shop_id, item_id = product_info
-        timestamp = int(time.time())
-        endpoint = "/product/get_item_detail"
-        signature = generate_signature(endpoint, timestamp)
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": signature
+        
+        # Query GraphQL para obter detalhes do produto
+        query = gql("""
+            query GetProductDetails($shopId: Int!, $itemId: Int!) {
+                product(shopId: $shopId, itemId: $itemId) {
+                    itemId
+                    name
+                    price
+                    stock
+                    description
+                    images
+                    rating
+                    historicalSold
+                    shop {
+                        name
+                        rating
+                    }
+                }
+            }
+        """)
+        
+        variables = {
+            "shopId": shop_id,
+            "itemId": item_id
         }
         
-        params = {
-            "partner_id": PARTNER_ID,
-            "timestamp": timestamp,
-            "shop_id": shop_id,
-            "item_id": item_id
-        }
-
-        async with aiohttp.ClientSession() as session:
-            api_url = f"{API_BASE}{endpoint}"
-            print(f"Fazendo requisição para: {api_url}")
-            print(f"Parâmetros: {params}")
-            print(f"Headers: {headers}")
+        # Obtém o cliente GraphQL
+        client = await get_graphql_client()
+        
+        try:
+            # Executa a query
+            result = await client.execute_async(query, variable_values=variables)
+            print(f"Resposta GraphQL: {json.dumps(result, indent=2)}")
             
-            async with session.get(api_url, headers=headers, params=params) as response:
-                response_text = await response.text()
-                print(f"Resposta da API (get_product_details): {response_text}")
+            if result and 'product' in result:
+                product = result['product']
                 
-                if response.status == 200:
-                    data = json.loads(response_text)
-                    if 'error' not in data or data['error'] == 0:
-                        item = data.get('data', {}).get('item', {})
-                        if item:
-                            # Gera link de afiliado
-                            affiliate_link = await generate_affiliate_link(url)
-                            
-                            return {
-                                'id': item_id,
-                                'name': item.get('name', ''),
-                                'price': float(item.get('price', 0)) / 100000,  # Convertendo para reais
-                                'original_price': float(item.get('original_price', 0)) / 100000,
-                                'discount': calculate_discount(
-                                    item.get('price', 0),
-                                    item.get('original_price', 0)
-                                ),
-                                'sales': item.get('historical_sold', 0),
-                                'rating': item.get('item_rating', {}).get('rating_star', 0),
-                                'rating_count': sum(item.get('item_rating', {}).get('rating_count', [0])),
-                                'shop_name': item.get('shop_name', ''),
-                                'shop_rating': item.get('shop_rating', 0),
-                                'description': item.get('description', ''),
-                                'stock': item.get('stock', 0),
-                                'link': affiliate_link or url  # Usa URL original se falhar geração do link afiliado
-                            }
-                    print(f"Erro nos dados retornados: {data.get('message', 'Erro desconhecido')}")
-                else:
-                    print(f"Erro na requisição: Status {response.status}")
-        return None
+                # Gera link de afiliado
+                affiliate_link = await generate_affiliate_link(url)
+                
+                return {
+                    'id': item_id,
+                    'name': product.get('name', ''),
+                    'price': float(product.get('price', 0)) / 100000,  # Convertendo para reais
+                    'stock': product.get('stock', 0),
+                    'description': product.get('description', ''),
+                    'sales': product.get('historicalSold', 0),
+                    'rating': product.get('rating', 0),
+                    'shop_name': product.get('shop', {}).get('name', ''),
+                    'shop_rating': product.get('shop', {}).get('rating', 0),
+                    'link': affiliate_link or url
+                }
+            
+            print("Dados do produto não encontrados na resposta")
+            return None
+            
+        except TransportQueryError as e:
+            print(f"Erro na query GraphQL: {str(e)}")
+            return None
+            
     except Exception as e:
         print(f"Erro ao buscar produto: {str(e)}")
         return None
 
 async def generate_affiliate_link(url: str) -> Optional[str]:
-    """Gera um link de afiliado para o produto"""
+    """Gera um link de afiliado para o produto usando GraphQL"""
     try:
-        timestamp = int(time.time())
-        endpoint = "/link/generate"
-        signature = generate_signature(endpoint, timestamp)
+        # Query GraphQL para gerar link de afiliado
+        query = gql("""
+            mutation GenerateAffiliateLink($url: String!) {
+                generateAffiliateLink(originalUrl: $url) {
+                    affiliateUrl
+                    shortUrl
+                }
+            }
+        """)
         
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": signature
+        variables = {
+            "url": url
         }
         
-        data = {
-            "partner_id": PARTNER_ID,
-            "timestamp": timestamp,
-            "original_url": url
-        }
+        # Obtém o cliente GraphQL
+        client = await get_graphql_client()
         
-        async with aiohttp.ClientSession() as session:
-            api_url = f"{API_BASE}{endpoint}"
-            print(f"Gerando link afiliado: {api_url}")
-            print(f"Dados: {data}")
+        try:
+            # Executa a mutation
+            result = await client.execute_async(query, variable_values=variables)
+            print(f"Resposta GraphQL (link afiliado): {json.dumps(result, indent=2)}")
             
-            async with session.post(api_url, headers=headers, json=data) as response:
-                response_text = await response.text()
-                print(f"Resposta da API (generate_affiliate_link): {response_text}")
-                
-                if response.status == 200:
-                    result = json.loads(response_text)
-                    if 'error' not in result or result['error'] == 0:
-                        return result.get('data', {}).get('affiliate_link')
-        return None
+            if result and 'generateAffiliateLink' in result:
+                # Retorna o link curto se disponível, senão o link normal
+                return (result['generateAffiliateLink'].get('shortUrl') or 
+                        result['generateAffiliateLink'].get('affiliateUrl'))
+            
+            print("Link de afiliado não encontrado na resposta")
+            return None
+            
+        except TransportQueryError as e:
+            print(f"Erro na mutation GraphQL: {str(e)}")
+            return None
+            
     except Exception as e:
         print(f"Erro ao gerar link afiliado: {str(e)}")
         return None
-
-def calculate_discount(current_price: float, original_price: float) -> int:
-    """Calcula o percentual de desconto"""
-    try:
-        current_price = float(current_price or 0)
-        original_price = float(original_price or 0)
-        if not original_price or not current_price or original_price <= current_price:
-            return 0
-        return int(((original_price - current_price) / original_price) * 100)
-    except Exception as e:
-        print(f"Erro ao calcular desconto: {str(e)}")
-        return 0
